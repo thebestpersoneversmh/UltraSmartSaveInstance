@@ -5,7 +5,7 @@ A modified build of **UniversalSynSaveInstance (USSI)** that correctly saves **U
 ## Usage
 
 ```lua
-local synsaveinstance = loadstring(game:HttpGet("https://raw.githubusercontent.com/RiseBlox/UltraSmartSaveInstance/main/saveinstance.luau", true), "saveinstance")()
+local synsaveinstance = loadstring(game:HttpGet("https://raw.githubusercontent.com/thebestpersoneversmh/UltraSmartSaveInstance/refs/heads/main/saveinstance.lua", true), "saveinstance")()
 local Options = {} -- Full option list @ https://luau.github.io/UniversalSynSaveInstance/api/SynSaveInstance
 synsaveinstance(Options)
 ```
