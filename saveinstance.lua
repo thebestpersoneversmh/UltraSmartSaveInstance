@@ -67,7 +67,22 @@ local readfile = readfile
 local writefile = writefile
 
 -- Union Fix
-local KeepSharedStrings = ArrayToDict({ "MeshData2", "ChildData2", "PhysicalConfigData" })
+local KeepSharedStrings = ArrayToDict({
+	"MeshData2",
+	"ChildData2",
+	"PhysicalConfigData",
+})
+
+-- Union properties that may contain the actual CSG/render geometry.
+-- These must be retried per-instance and empty strings must not count as success.
+local UnionGeometryProperties = ArrayToDict({
+	"MeshData",
+	"MeshData2",
+	"ChildData",
+	"ChildData2",
+	"SolidMeshHolder",
+	"ConvexDecompHolder",
+})
 
 -- Terrain Serialization
 local realcheck = true
@@ -2511,7 +2526,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 		IgnoreDefaultProperties = true,
 		IgnoreNotArchivable = true,
 		IgnorePropertiesOfNotScriptsOnScriptsMode = false,
-		IgnoreSpecialProperties = ArrayToDict({ "Fluxus", "Delta", "Solara" })[EXECUTOR_NAME] or false, -- ! Please submit more Executors that crash on gethiddenproperty (with this disabled basically)
+		IgnoreSpecialProperties = false, -- Union geometry requires hidden/not-scriptable property reads.
 
 		IsolateLocalPlayer = false, --  #service.StarterGui:GetChildren() == 0
 		IsolateLocalPlayerCharacter = false,
@@ -2550,7 +2565,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 
 		IgnoreSharedStrings = EXECUTOR_NAME ~= "Wave",
 		SharedStringOverwrite = false,
-		TreatUnionsAsParts = not gethiddenproperty or ArrayToDict({ "Fluxus", "Delta", "Solara" })[EXECUTOR_NAME] or false, -- TODO Temporary true (once removed, remove Note from docs too)
+		TreatUnionsAsParts = false, -- Preserve UnionOperation geometry instead of replacing it with a Part.
 		AlternativeWritefile = not ArrayToDict({ "WRD", "Xeno", "Zorara" })[EXECUTOR_NAME],
 
 		OptionsAliases = { -- You can't really modify these as a user (because they're read before user's Options are loaded)
@@ -3282,10 +3297,27 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 	end
 
 	local function filterPropVal(result, propertyName, category) -- ? raw == nil thanks to SerializedDefaultAttributes; "can't get value" - due to WriteOnly tag;  "Invalid value for enum " - "StreamingPauseMode" (old games probably) Roexec
-		return result == nil
-			or result == "can't get value"
-			or type(result) == "string"
-				and (category == "Enum" or string_find(result, "Unable to get property " .. propertyName))
+		if result == nil or result == "can't get value" then
+			return true
+		end
+
+		if type(result) == "string" then
+			-- Empty union geometry is not usable data. Treat it as a failed
+			-- read so another reader/fallback can still be attempted.
+			if UnionGeometryProperties[propertyName] and result == "" then
+				return true
+			end
+
+			if category == "Enum" then
+				return true
+			end
+
+			if string_find(result, "Unable to get property " .. propertyName) then
+				return true
+			end
+		end
+
+		return false
 	end
 
 	local __BREAK = "__BREAK" .. service.HttpService:GenerateGUID(false)
@@ -3306,7 +3338,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 
 		local CanRead = property.CanRead
 
-		if CanRead == false then -- * Skips because we've checked this property before
+		if CanRead == false and not UnionGeometryProperties[propertyName] then -- * Skips because we've checked this property before
 			return __BREAK
 		end
 
@@ -3326,7 +3358,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 							__DEBUG_MODE("Filtered", propertyName)
 						end
 						-- Property.Special = false
-						if not KeepSharedStrings[propertyName] then
+						if not UnionGeometryProperties[propertyName] then
 							property.CanRead = false
 						end
 					end
@@ -3352,7 +3384,9 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 					end
 				end
 
-				property.CanRead = ok
+				if not UnionGeometryProperties[propertyName] or ok then
+					property.CanRead = ok
+				end
 
 				if not ok or filterPropVal(raw, propertyName, category) then
 					return __BREAK
@@ -3552,6 +3586,11 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 				-- local Properties =
 				savebuffer[savebuffer_size] = ReturnItem(ClassTagOverride or ClassName, instance) -- TODO: Ideally this shouldn't return <Properties> as well as the line below to close it IF  IgnorePropertiesOfNotScriptsOnScriptsMode is ENABLED
 				savebuffer_size += 1
+				local unionGeometryState
+				if instance:IsA("PartOperation") then
+					unionGeometryState = {}
+				end
+
 				if not (IgnorePropertiesOfNotScriptsOnScriptsMode and not isLuaSourceContainer(instance)) then
 					local default_instance, new_def_inst
 
@@ -3605,7 +3644,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 						then
 							raw = ReadProperty(instance, Property, PropertyName, Special, Category, Optional)
 							if raw == __BREAK then -- ! Assuming __BREAK is always returned when there's a failure to read a property
-								local isImportantUnionData = KeepSharedStrings[PropertyName]
+								local isImportantUnionData = UnionGeometryProperties[PropertyName]
 
 								local GHPFFailed = Property.GHPFFailed
 								if isImportantUnionData then
@@ -3624,7 +3663,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 										ok = nil
 									end
 
-									if ok then
+									if ok and not filterPropVal(result, PropertyName, Category) then
 										raw = result
 									else
 										GHPFFailed = true
@@ -3640,7 +3679,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 								if GHPFFailed and Fallback then
 									local ok, result = pcall(Fallback, instance)
 
-									if ok then
+									if ok and not filterPropVal(result, PropertyName, Category) then
 										raw = result
 									else
 										Property.Fallback = nil -- Low level execs might fail due to lack of some Capabilities
@@ -3657,6 +3696,13 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 							end
 
 							-- Special = Property.Special -- ? Read TODO below (must be updated if it's used frequently afterwards)
+
+							if unionGeometryState and (
+								PropertyName == "AssetId"
+								or UnionGeometryProperties[PropertyName]
+							) then
+								unionGeometryState[PropertyName] = raw
+							end
 
 							if
 								default_instance
@@ -3841,6 +3887,32 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 						end
 					end
 				end
+
+				if unionGeometryState then
+					local function hasBinaryData(value)
+						return type(value) == "string" and #value > 0
+					end
+
+					local assetId = unionGeometryState.AssetId
+					local hasAsset = assetId ~= nil and tostring(assetId) ~= ""
+
+					local hasGeometry =
+						hasBinaryData(unionGeometryState.MeshData)
+						or hasBinaryData(unionGeometryState.MeshData2)
+						or hasBinaryData(unionGeometryState.ChildData)
+						or hasBinaryData(unionGeometryState.ChildData2)
+						or hasBinaryData(unionGeometryState.SolidMeshHolder)
+						or hasBinaryData(unionGeometryState.ConvexDecompHolder)
+
+					if not hasAsset and not hasGeometry then
+						warn(
+							"[UNRECOVERABLE UNION]",
+							instance:GetFullName(),
+							"AssetId and all known geometry holders were empty/unreadable"
+						)
+					end
+				end
+
 				savebuffer[savebuffer_size] = "</Properties>"
 				savebuffer_size += 1
 
@@ -4486,6 +4558,40 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 				local ok, result = pcall(FetchAPI)
 				if ok then
 					ClassList = result
+
+					local function ensureProperty(className, propertyInfo)
+						local classInfo = ClassList[className]
+						if not classInfo then
+							warn("[Union Fix] Missing API class:", className)
+							return
+						end
+
+						for _, existing in classInfo.Properties do
+							if existing.Name == propertyInfo.Name then
+								return
+							end
+						end
+
+						table.insert(classInfo.Properties, propertyInfo)
+					end
+
+					-- Newer PartOperation render-geometry holder.
+					ensureProperty("PartOperation", {
+						Name = "SolidMeshHolder",
+						Category = "Data",
+						ValueType = "NetAssetRef",
+						Special = true,
+						CanRead = nil,
+					})
+
+					-- Collision/decomposition holder inherited by PartOperation.
+					ensureProperty("TriangleMeshPart", {
+						Name = "ConvexDecompHolder",
+						Category = "Data",
+						ValueType = "NetAssetRef",
+						Special = true,
+						CanRead = nil,
+					})
 				else
 					warn("Failed to load the API Dump")
 					warn(result)
