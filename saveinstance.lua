@@ -1289,13 +1289,16 @@ do
 			end,
 			DefinesCapabilities = "Sandboxed",
 			Tags = function(instance)
-				-- https://github.com/RobloxAPI/spec/blob/master/properties/Tags.md
-
-				local tags = service.CollectionService:GetTags(instance) -- ? Seems faster than instance:GetTags
+				-- Tags are serialized as a null-separated BinaryString.
+				local tags = service.CollectionService:GetTags(instance)
 
 				if #tags == 0 then
 					return ""
 				end
+
+				-- Tag order has no semantic meaning, but sorting makes
+				-- repeated saves deterministic.
+				table.sort(tags)
 
 				return table.concat(tags, "\0")
 			end,
@@ -3336,6 +3339,26 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 			end
 		end
 
+		-- gethiddenproperty(instance, "Tags") commonly succeeds but returns
+		-- an empty BinaryString. Always use CollectionService, which exposes
+		-- the actual runtime tags applied to this specific instance.
+		if propertyName == "Tags" then
+			local ok, tags = pcall(
+				service.CollectionService.GetTags,
+				service.CollectionService,
+				instance
+			)
+
+			if ok then
+				if #tags == 0 then
+					return ""
+				end
+
+				table.sort(tags)
+				return table.concat(tags, "\0")
+			end
+		end
+
 		local CanRead = property.CanRead
 
 		if CanRead == false and not UnionGeometryProperties[propertyName] then -- * Skips because we've checked this property before
@@ -4574,6 +4597,16 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 
 						table.insert(classInfo.Properties, propertyInfo)
 					end
+
+					-- Tags are inherited by every Instance and serialize as
+					-- a null-separated BinaryString.
+					ensureProperty("Instance", {
+						Name = "Tags",
+						Category = "Data",
+						ValueType = "BinaryString",
+						Special = true,
+						CanRead = nil,
+					})
 
 					-- Newer PartOperation render-geometry holder.
 					ensureProperty("PartOperation", {
