@@ -3604,9 +3604,32 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 							)
 						then
 							raw = ReadProperty(instance, Property, PropertyName, Special, Category, Optional)
+							if KeepSharedStrings[PropertyName] then
+								local rawSize =
+									type(raw) == "string"
+									and #raw
+									or -1
+							
+								print(
+									"[UNION DATA]",
+									instance:GetFullName(),
+									PropertyName,
+									rawSize,
+									"bytes",
+									"Triangles:",
+									instance.TriangleCount
+								)
+							end
 
 							if raw == __BREAK then -- ! Assuming __BREAK is always returned when there's a failure to read a property
-								local GHPFFailed, Fallback = Property.GHPFFailed, Property.Fallback
+								local isImportantUnionData = KeepSharedStrings[PropertyName]
+
+								local GHPFFailed =
+									isImportantUnionData and false
+									or Property.GHPFFailed
+								
+								local Fallback = Property.Fallback
+								
 								if GHPFFailed and not Fallback then
 									continue
 								end
@@ -3621,7 +3644,12 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 										raw = result
 									else
 										GHPFFailed = true
-										Property.GHPFFailed = GHPFFailed
+									
+										-- Do not globally disable union data because
+										-- one specific union failed.
+										if not isImportantUnionData then
+											Property.GHPFFailed = true
+										end
 									end
 								end
 
@@ -4159,7 +4187,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 	if OPTIONS.KillAllScripts and not GLOBAL_ENV.USSI_KAS then
 		GLOBAL_ENV.USSI_KAS = true
 		-- * partial credits @centerepic
-		game:GetService("ScriptContext"):SetTimeout(math.clamp(SaveCacheInterval * 0.000047, 20, 30))
+		game:GetService("ScriptContext"):SetTimeout(300)
 
 		local self = coroutine.running()
 		do
@@ -4419,20 +4447,52 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 
 					local EncodingService = game:GetService("EncodingService")
 					local EncodingService_base64encode = function(raw)
-						return buffer.tostring(EncodingService:Base64Encode(buffer.fromstring(raw)))
+						-- Must be divisible by 3 so Base64 chunks can be
+						-- joined without padding appearing between chunks.
+						local CHUNK_SIZE = 3 * 1024 * 1024
+					
+						if #raw <= CHUNK_SIZE then
+							return buffer.tostring(
+								EncodingService:Base64Encode(buffer.fromstring(raw))
+							)
+						end
+					
+						local encodedChunks = table.create(
+							math.ceil(#raw / CHUNK_SIZE)
+						)
+					
+						local outputIndex = 1
+					
+						for startIndex = 1, #raw, CHUNK_SIZE do
+							local endIndex = math.min(
+								startIndex + CHUNK_SIZE - 1,
+								#raw
+							)
+					
+							local rawChunk = string.sub(
+								raw,
+								startIndex,
+								endIndex
+							)
+					
+							encodedChunks[outputIndex] = buffer.tostring(
+								EncodingService:Base64Encode(
+									buffer.fromstring(rawChunk)
+								)
+							)
+					
+							outputIndex += 1
+					
+							-- Prevent one enormous uninterrupted operation.
+							task.wait()
+						end
+					
+						return table.concat(encodedChunks)
 					end
 
 					-- * Tests if base64encode exists and works properly then benchmark it
-					if base64encode and base64encode("\1\0\0\0\1") == "AQAAAAE=" then
-						if rbxcrypt_base64encode then
-							base64encode = benchmark(
-								{ base64encode, rbxcrypt_base64encode, EncodingService_base64encode },
-								test_str
-							)
-						end
-					else
-						base64encode = rbxcrypt_base64encode
-					end
+					-- Use Roblox's encoder and split large inputs.
+					base64encode = EncodingService_base64encode
 
 					if not base64encode then
 						warn("base64encode not found")
