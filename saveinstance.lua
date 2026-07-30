@@ -2455,7 +2455,7 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 
     local currentparts, currentsize, totalsize, chunks = {}, 0, 0, table.create(1)
     local savebuffer, savebuffer_size = {}, 1
-    local CHUNK_LIMIT = 200 * 1024 * 1024
+    local CHUNK_LIMIT = 16 * 1024 * 1024
 	local _terrain_physicsgrid, _terrain_smoothgrid
 	local header =
 		'<roblox version="4">'
@@ -3604,29 +3604,13 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 							)
 						then
 							raw = ReadProperty(instance, Property, PropertyName, Special, Category, Optional)
-							if KeepSharedStrings[PropertyName] then
-								local rawSize =
-									type(raw) == "string"
-									and #raw
-									or -1
-							
-								print(
-									"[UNION DATA]",
-									instance:GetFullName(),
-									PropertyName,
-									rawSize,
-									"bytes",
-									"Triangles:",
-									instance.TriangleCount
-								)
-							end
-
 							if raw == __BREAK then -- ! Assuming __BREAK is always returned when there's a failure to read a property
 								local isImportantUnionData = KeepSharedStrings[PropertyName]
 
-								local GHPFFailed =
-									isImportantUnionData and false
-									or Property.GHPFFailed
+								local GHPFFailed = Property.GHPFFailed
+								if isImportantUnionData then
+									GHPFFailed = false
+								end
 								
 								local Fallback = Property.Fallback
 								
@@ -4482,9 +4466,6 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 							)
 					
 							outputIndex += 1
-					
-							-- Prevent one enormous uninterrupted operation.
-							task.wait()
 						end
 					
 						return table.concat(encodedChunks)
@@ -4524,9 +4505,32 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 
 		elapse_t = os.clock()
 
-		local ok, err = xpcall(save_game, function(err)
-			return debug.traceback(err)
+		local ok, err = xpcall(save_game, function(saveError)
+			local message = tostring(saveError)
+			local traceback = message
+
+			if debug and debug.traceback then
+				traceback = debug.traceback(message, 2)
+			end
+
+			return traceback
 		end)
+
+		if not ok then
+			local report = "Error found while saving:\n" .. tostring(err)
+
+			print(report)
+			warn(report)
+
+			if writefile then
+				pcall(writefile, "SaveInstanceError.txt", report)
+			end
+
+			if StatusText then
+				StatusText.Text = "Failed: " .. string.sub(tostring(err), 1, 220)
+				StatusText.TextColor3 = Color3.new(1, 0, 0)
+			end
+		end
 
 		if OPTIONS.BoostFPS then
 			pcall(function()
