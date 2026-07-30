@@ -3326,7 +3326,9 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 							__DEBUG_MODE("Filtered", propertyName)
 						end
 						-- Property.Special = false
-						property.CanRead = false
+						if not KeepSharedStrings[propertyName] then
+							property.CanRead = false
+						end
 					end
 
 					return __BREAK -- ? We skip it because even if we use "" it will just reset to default in most cases, unless it's a string tag for example (same as not being defined)
@@ -4046,14 +4048,26 @@ local function synsaveinstance(CustomOptions, CustomOptions2)
 			)
 		end
 		do
-			local tmp = { "<SharedStrings>" }
-			for value, identifier in SharedStrings do
-				table.insert(tmp, '<SharedString md5="' .. identifier .. '">' .. value .. "</SharedString>")
-			end
-
-			if 1 < #tmp then -- next(SharedStrings) check also works but seems to be slower
-				savebuffer[savebuffer_size] = table.concat(tmp)
+			if next(SharedStrings) then
+				savebuffer[savebuffer_size] = "<SharedStrings>"
 				savebuffer_size += 1
+				save_cache()
+		
+				for value, identifier in SharedStrings do
+					savebuffer[savebuffer_size] =
+						'<SharedString md5="'
+						.. identifier
+						.. '">'
+						.. value
+						.. "</SharedString>"
+		
+					savebuffer_size += 1
+		
+					-- Flush each large SharedString separately instead
+					-- of concatenating every union mesh into one huge string.
+					save_cache()
+				end
+		
 				savebuffer[savebuffer_size] = "</SharedStrings>"
 				savebuffer_size += 1
 			end
